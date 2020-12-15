@@ -39,6 +39,11 @@ def get_dataloader(batch_size, transform=None):
 
 
 def train_model(model, optimizer, dataloaders, args):
+    os.makedirs('checkpoint/baseline', exist_ok=True)
+    os.makedirs('checkpoint/finetune', exist_ok=True)
+    os.makedirs('logdir/baseline', exist_ok=True) 
+    os.makedirs('logdir/finetune', exist_ok=True) 
+
     warmup_step = min(math.ceil(len(dataloaders['train'].dataset) / args.batch_size), args.warm_up) + 1 
     if warmup_step > 0:
         warmup_scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, total_steps=warmup_step * 2, pct_start=0.5, anneal_strategy='linear')
@@ -51,20 +56,20 @@ def train_model(model, optimizer, dataloaders, args):
     current_step = 0
     if args.resume:
         print('==> Resuming from checkpoint..')
-        checkpoint = torch.load('./checkpoint/ckpt.pth', map_location=device)
+        checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['net'])
         best_acc = checkpoint['acc']
         start_epoch = checkpoint['epoch']
 
     if args.resume_selfie:
         print('==> Resuming from selfie checkpoint..')
-        checkpoint = torch.load('ckpt.pth', map_location=device)
+        checkpoint = torch.load(args.resume_selfie, map_location=device)
         model_dict = model.state_dict()
         pretrained_dict = {k: v for k, v in checkpoint['net'].items() if k in model_dict}
         model_dict.update(pretrained_dict)
         model.load_state_dict(model_dict)
-        #best_acc = checkpoint['acc']
-        #start_epoch = checkpoint['epoch']
+        best_acc = checkpoint['acc']
+        start_epoch = checkpoint['epoch']
         
     perf_dict = {}
     for name in ['train_loss', 'train_acc', 'val_loss', 'val_acc']:
@@ -130,13 +135,17 @@ def train_model(model, optimizer, dataloaders, args):
                     'acc': epoch_acc,
                     'epoch': epoch,
                 }
-                if not os.path.isdir('checkpoint'):
-                    os.mkdir('checkpoint')
-                torch.save(state, './checkpoint/ckpt.pth')
+                if args.resume_selfie:
+                    torch.save(state, './checkpoint/finetune/ckpt_{}.pth'.format(epoch))
+                else:
+                    torch.save(state, './checkpoint/baseline/ckpt_{}.pth'.format(epoch))
                 best_acc = epoch_acc
-    
+
     for name in ['train_loss', 'train_acc', 'val_loss', 'val_acc']:
-        np.save(name, perf_dict[name])
+        if args.resume_selfie:
+            np.save('logdir/finetune/' + name, perf_dict[name])
+        else:
+            np.save('logdir/baseline', perf_dict[name])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
@@ -146,10 +155,11 @@ if __name__ == "__main__":
     parser.add_argument('--batch-size', default=256, type=int, help='batch size')
     parser.add_argument('--total-epoch', default=200, type=int, help='total epochs to train')
     parser.add_argument('--warm-up', default=1000, type=int, help='number of warmup steps')
-    parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
-    parser.add_argument('--resume-selfie', action='store_true', help='resume from selfie checkpoint')
+    parser.add_argument('--resume', default=None, type=str, help='resume from selfie checkpoint')
+    parser.add_argument('--resume-selfie', default=None, type=str, help='resume from selfie checkpoint')
     
     args = parser.parse_args()
+    print(args.resume_selfie)
 
     dataloaders = get_dataloader(args.batch_size)
     model = PreActResNet50()
