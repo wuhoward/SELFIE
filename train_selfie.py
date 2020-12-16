@@ -18,7 +18,6 @@ use_gpu = True
 device = torch.device("cuda:0" if torch.cuda.is_available() and use_gpu else "cpu")
 
 def get_dataloader(batch_size):
-    data_transform = transforms.ToTensor()
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
@@ -65,6 +64,15 @@ def train_model(model, encoder, optimizer, dataloaders, args):
 
     best_acc = 0.0
     current_step = 0
+
+    if args.resume:
+        print('==> Resuming from checkpoint..')
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.load_state_dict(checkpoint['net'])
+        encoder.load_state_dict(checkpoint['encoder'])
+        best_acc = checkpoint['acc']
+        start_epoch = checkpoint['epoch']
+
     perf_dict = {}
     for name in ['train_loss', 'train_acc', 'val_loss', 'val_acc']:
         perf_dict[name] = []
@@ -90,8 +98,9 @@ def train_model(model, encoder, optimizer, dataloaders, args):
             running_loss = 0.0
             running_corrects = 0
 
-            for inputs, _ in dataloaders[phase]:
+            for inputs, labels in dataloaders[phase]:
                 inputs = inputs.to(device)
+                labelss = labels.to(device)
 
                 optimizer.zero_grad()
 
@@ -114,10 +123,20 @@ def train_model(model, encoder, optimizer, dataloaders, args):
                     # Separate context patches from the target patches
                     # [N, num_patch]
                     target_index = torch.topk(random_score, k=num_target, dim=1).indices
-                    context_index = torch.topk(random_score, k=num_patch-num_target, largest=False, dim=1).indices
-                    context_patch = hidden[torch.arange(len(inputs)).unsqueeze(1), context_index]
                     target_patch = hidden[torch.arange(len(inputs)).unsqueeze(1), target_index]
 
+                    context_index = torch.topk(random_score, k=num_patch-num_target, largest=False, dim=1).indices
+                    if args.all_patch:
+                        noise = torch.randn((hidden.shape[0], num_target, FEATURE_SIZE)).to(device)
+                        #context_mask = torch.ones_like(hidden)
+                        #context_mask[torch.arange(len(inputs)).unsqueeze(1), target_index] = 0
+                        #context_patch = hidden * context_mask
+                        context_patch = hidden.clone()
+                        context_patch[torch.arange(len(inputs)).unsqueeze(1), target_index] = noise
+                    else:
+                        context_patch = hidden[torch.arange(len(inputs)).unsqueeze(1), context_index]
+
+                    if 
                     u_0 = torch.zeros([len(inputs), FEATURE_SIZE]).unsqueeze(0).to(device)
                     u = encoder(torch.cat((u_0, context_patch.permute(1, 0 ,2))), target_index.reshape(-1).to(device))
                     outputs = torch.bmm(u, target_patch.permute(0, 2, 1)).reshape(-1, num_target)
@@ -152,6 +171,7 @@ def train_model(model, encoder, optimizer, dataloaders, args):
                 print('==> Saving the new best model with val acc {}'.format(epoch_acc))
                 state = {
                     'net': model.state_dict(),
+                    'encoder': encoder.state_dict(),
                     'acc': epoch_acc,
                     'epoch': epoch,
                 }
@@ -172,9 +192,12 @@ if __name__ == "__main__":
     parser.add_argument('--batch-size', default=128, type=int, help='batch size')
     parser.add_argument('--total-epoch', default=200, type=int, help='total epochs to train')
     parser.add_argument('--warm-up', default=1000, type=int, help='number of warmup steps')
-    parser.add_argument('--resume-selfie', default=None, type=str, help='resume from selfie checkpoint')
+    parser.add_argument('--resume', default=None, type=str, help='resume from selfie checkpoint')
+    parser.add_argument('--all-patch', action='store_true', help='use all patches as encoder input')
+    parser.add_argument('--supervised', action='store_true', help='perform classification instead of patch prediction')
     
     args = parser.parse_args()
+    print(args)
 
     dataloaders = get_dataloader(args.batch_size)
     model = PreActResNet50()

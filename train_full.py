@@ -15,9 +15,9 @@ use_gpu = True
 device = torch.device("cuda:0" if torch.cuda.is_available() and use_gpu else "cpu")
 MEAN = [0.4913997551666284, 0.48215855929893703, 0.4465309133731618]
 STD = [0.24703225141799082, 0.24348516474564, 0.26158783926049628]
+np.random.seed(0)
 
-
-def get_dataloader(batch_size, transform=None):
+def get_dataloader(batch_size, train_percent=1):
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
@@ -28,11 +28,11 @@ def get_dataloader(batch_size, transform=None):
         transforms.ToTensor(),
         transforms.Normalize(MEAN, STD),
     ])
-    if transform is not None:
-        train_transform = transform
     dataloaders = {}
     trainset = datasets.CIFAR10(root='.', train=True, download=True, transform=train_transform)
     testset = datasets.CIFAR10(root='.', train=False, download=True, transform=test_transform)
+    trainidx = np.random.choice(len(trainset), int(len(trainset) * train_percent), replace=False)
+    trainset = torch.utils.data.Subset(trainset, trainidx)
     dataloaders['train'] = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=1)
     dataloaders['val']  = torch.utils.data.DataLoader(testset, batch_size=batch_size, shuffle=False, num_workers=1)
     return dataloaders
@@ -58,7 +58,7 @@ def train_model(model, optimizer, dataloaders, args):
         print('==> Resuming from checkpoint..')
         checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['net'])
-        best_acc = checkpoint['acc']
+        #best_acc = checkpoint['acc']
         start_epoch = checkpoint['epoch']
 
     if args.resume_selfie:
@@ -68,7 +68,7 @@ def train_model(model, optimizer, dataloaders, args):
         pretrained_dict = {k: v for k, v in checkpoint['net'].items() if k in model_dict}
         model_dict.update(pretrained_dict)
         model.load_state_dict(model_dict)
-        best_acc = checkpoint['acc']
+        #best_acc = checkpoint['acc']
         start_epoch = checkpoint['epoch']
         
     perf_dict = {}
@@ -154,14 +154,15 @@ if __name__ == "__main__":
     parser.add_argument('--val-cycle', default=1, type=int, help='perform validation every ? epochs')
     parser.add_argument('--batch-size', default=256, type=int, help='batch size')
     parser.add_argument('--total-epoch', default=200, type=int, help='total epochs to train')
+    parser.add_argument('--train-percent', default=1, type=float, help='percentage of training data')
     parser.add_argument('--warm-up', default=1000, type=int, help='number of warmup steps')
     parser.add_argument('--resume', default=None, type=str, help='resume from selfie checkpoint')
     parser.add_argument('--resume-selfie', default=None, type=str, help='resume from selfie checkpoint')
     
     args = parser.parse_args()
-    print(args.resume_selfie)
+    print(args)
 
-    dataloaders = get_dataloader(args.batch_size)
+    dataloaders = get_dataloader(args.batch_size, args.train_percent)
     model = PreActResNet50()
     model = model.to(device)
         
