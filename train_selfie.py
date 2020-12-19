@@ -8,6 +8,8 @@ import torch.optim as optim
 from torchvision import datasets, transforms, utils
 import numpy as np
 from preact_resnet import *
+import matplotlib.pyplot as plt
+import matplotlib.patches as pltpatches
 
 MEAN = [0.4913997551666284, 0.48215855929893703, 0.4465309133731618]
 STD = [0.24703225141799082, 0.24348516474564, 0.26158783926049628]
@@ -16,6 +18,22 @@ FEATURE_SIZE = 1024 # Output of ResNet Model
 PATCH_SIZE = 8
 use_gpu = True
 device = torch.device("cuda:0" if torch.cuda.is_available() and use_gpu else "cpu")
+
+# Plot prediction results in Jupyter Notebook
+def plot_prediction(img, pred_idx, target_idx):
+    fig,ax = plt.subplots(1)
+    patch_dim = img.shape[1] // PATCH_SIZE
+    ax.imshow(img.numpy().transpose(1, 2, 0) * np.array(STD) + np.array(MEAN))
+    for i in range(len(pred_idx)):
+        patch_x = target_idx[i] % patch_dim
+        patch_y = target_idx[i] // patch_dim
+        edgecolor = 'r'
+        if pred_idx[i] == i:
+            edgecolor = 'b'
+        rect = pltpatches.Rectangle((patch_x * PATCH_SIZE-0.5, patch_y * PATCH_SIZE-0.5), PATCH_SIZE, PATCH_SIZE,
+                                    linewidth=2, edgecolor=edgecolor, facecolor='none')
+        ax.add_patch(rect)
+    plt.show()
 
 def get_dataloader(batch_size):
     train_transform = transforms.Compose([
@@ -49,11 +67,13 @@ class Encoder(nn.Module):
         u = self.encoder(x)[0]
         num_batch = u.shape[0]
         num_target = pos.shape[0] // num_batch
+        # repeat u and add with num_target position embeddings to make multiple predictiona at the same time
         u = u.repeat(1, num_target).reshape(num_batch*num_target, -1)
         v += u
         return v.reshape(num_batch, num_target, -1)
 
 def train_model(model, encoder, optimizer, dataloaders, args):
+    # Cosine Annealing + Learning Rate Wram-up
     warmup_step = min(math.ceil(len(dataloaders['train'].dataset) / args.batch_size), args.warm_up) + 1 
     if warmup_step > 0:
         warmup_scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=args.lr, total_steps=warmup_step * 2, pct_start=0.5, anneal_strategy='linear')
@@ -70,7 +90,6 @@ def train_model(model, encoder, optimizer, dataloaders, args):
         checkpoint = torch.load(args.resume, map_location=device)
         model.load_state_dict(checkpoint['net'])
         encoder.load_state_dict(checkpoint['encoder'])
-        best_acc = checkpoint['acc']
         start_epoch = checkpoint['epoch']
 
     perf_dict = {}
@@ -100,45 +119,46 @@ def train_model(model, encoder, optimizer, dataloaders, args):
 
             for inputs, labels in dataloaders[phase]:
                 inputs = inputs.to(device)
-                labelss = labels.to(device)
+                labels = labels.to(device)
 
                 optimizer.zero_grad()
 
                 with torch.set_grad_enabled(phase == 'train'):
                     num_patch = (inputs.shape[2] // PATCH_SIZE) ** 2
 
-                    # [N*num_patch, 3, 8, 8]
+                    # Divide input image into patches [N*num_patch, 3, 8, 8]
                     patches = inputs.unfold(2, PATCH_SIZE, PATCH_SIZE).unfold(3, PATCH_SIZE, PATCH_SIZE).permute(
                         0, 2, 3, 1, 4, 5).reshape(-1, 3, 8, 8)
 
+                    # How many patches are targets (distractors), the rest would be context patches to feed in the transformer
                     num_target = int(num_patch * 0.25)
 
                     # Feed all the patches into the feature extractor
                     hidden = model(patches).reshape(len(inputs), num_patch, -1)
                     hidden_dim = hidden.shape[2]
 
-                    # use the largest randon scores to select the target patches
                     random_score = torch.rand(len(inputs), num_patch)
 
-                    # Separate context patches from the target patches
-                    # [N, num_patch]
+                    # Use the top-k random scores as target patches [N, num_target]
                     target_index = torch.topk(random_score, k=num_target, dim=1).indices
                     target_patch = hidden[torch.arange(len(inputs)).unsqueeze(1), target_index]
 
-                    context_index = torch.topk(random_score, k=num_patch-num_target, largest=False, dim=1).indices
+                    # Use the bottm-k random scores as context patches [N, num_context]
+                    num_context = num_patch - num_target
+                    context_index = torch.topk(random_score, k=num_context, largest=False, dim=1).indices
+
                     if args.all_patch:
-                        noise = torch.randn((hidden.shape[0], num_target, FEATURE_SIZE)).to(device)
-                        #context_mask = torch.ones_like(hidden)
-                        #context_mask[torch.arange(len(inputs)).unsqueeze(1), target_index] = 0
-                        #context_patch = hidden * context_mask
                         context_patch = hidden.clone()
+                        # Use noise to fill in the empty patches
+                        noise = torch.randn((hidden.shape[0], num_target, FEATURE_SIZE)).to(device)
                         context_patch[torch.arange(len(inputs)).unsqueeze(1), target_index] = noise
                     else:
                         context_patch = hidden[torch.arange(len(inputs)).unsqueeze(1), context_index]
-
-                    if 
+                    
+                    # Pad one input at the front
                     u_0 = torch.zeros([len(inputs), FEATURE_SIZE]).unsqueeze(0).to(device)
                     u = encoder(torch.cat((u_0, context_patch.permute(1, 0 ,2))), target_index.reshape(-1).to(device))
+
                     outputs = torch.bmm(u, target_patch.permute(0, 2, 1)).reshape(-1, num_target)
                     targets = torch.arange(num_target).repeat(len(inputs)).to(device)
                     _, preds = torch.max(outputs, 1)
@@ -194,7 +214,6 @@ if __name__ == "__main__":
     parser.add_argument('--warm-up', default=1000, type=int, help='number of warmup steps')
     parser.add_argument('--resume', default=None, type=str, help='resume from selfie checkpoint')
     parser.add_argument('--all-patch', action='store_true', help='use all patches as encoder input')
-    parser.add_argument('--supervised', action='store_true', help='perform classification instead of patch prediction')
     
     args = parser.parse_args()
     print(args)
@@ -207,5 +226,6 @@ if __name__ == "__main__":
     encoder = Encoder(FEATURE_SIZE, 3, 16)
     encoder = encoder.to(device)
         
-    optimizer = optim.SGD(list(model.parameters()) + list(encoder.parameters()), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay, nesterov=True)
+    optimizer = optim.SGD(list(model.parameters()) + list(encoder.parameters()), lr=args.lr, 
+                          momentum=0.9, weight_decay=args.weight_decay, nesterov=True)
     train_model(model, encoder, optimizer, dataloaders, args)

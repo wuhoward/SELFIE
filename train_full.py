@@ -15,7 +15,7 @@ use_gpu = True
 device = torch.device("cuda:0" if torch.cuda.is_available() and use_gpu else "cpu")
 MEAN = [0.4913997551666284, 0.48215855929893703, 0.4465309133731618]
 STD = [0.24703225141799082, 0.24348516474564, 0.26158783926049628]
-np.random.seed(0)
+np.random.seed(2)
 
 def get_dataloader(batch_size, train_percent=1):
     train_transform = transforms.Compose([
@@ -145,7 +145,7 @@ def train_model(model, optimizer, dataloaders, args):
         if args.resume_selfie:
             np.save('logdir/finetune/' + name, perf_dict[name])
         else:
-            np.save('logdir/baseline', perf_dict[name])
+            np.save('logdir/baseline/' + name, perf_dict[name])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
